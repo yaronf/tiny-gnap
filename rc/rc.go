@@ -1,0 +1,314 @@
+package rc
+
+import (
+	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"github.com/lestrrat-go/jwx/jwa"
+	"github.com/lestrrat-go/jwx/jwk"
+	"github.com/lestrrat-go/jwx/jws"
+	"github.com/pkg/errors"
+	"github.com/rapidloop/skv"
+	"go.uber.org/zap"
+	"io"
+	"os"
+	"time"
+)
+
+var rootLogger *zap.Logger
+var logger *zap.SugaredLogger
+
+const NonceLength = 12
+
+// type accessToken string
+
+type Any interface{}
+
+type Request struct {
+	Any
+} // the raw JSON structure
+
+type Client struct {
+	name, uri string
+	prv, pub jwk.Key
+	messageSecurity int
+}
+
+// Message security
+const (
+	DetachedSignature = iota
+	AttachedJWS
+)
+
+func (req Request) dump() {
+	var buff bytes.Buffer
+	_ = json.Indent(&buff, []byte(req.toJSON()), "", "  ")
+	fmt.Println("req:", buff.String())
+}
+
+func (req Request) toJSON() string {
+	s, err := json.Marshal(req.Any)
+	if err != nil {
+		fmt.Println("Could not marshal request: ", err)
+		os.Exit(1)
+	}
+	return string(s)
+}
+
+func generateClientKey() (prv, pub jwk.Key, err error) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		fmt.Println("Failed to generate RSA key", err)
+		return nil, nil, err
+	}
+	prv, err = jwk.New(privateKey)
+	if err != nil {
+		return nil, nil, errors.Wrapf(err,"Failed to create private key")
+	}
+	pub, err = jwk.New(privateKey.Public())
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "Failed to create public key")
+	}
+	err = jwk.AssignKeyID(prv)
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "Failed to assign key ID to prv")
+	}
+	err = jwk.AssignKeyID(pub)
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "Failed to assign key ID to pub")
+	}
+	return
+}
+
+//func accessResource(rs) error {
+//	var err1, err2 error
+//	token, err1 := requestToken()
+//	if err1 != nil {
+//		return err1
+//	}
+//	request := makeRsRequest(token)
+//	response, err2 := sendRequest(request)
+//	if err2 != nil {
+//		return err2
+//	}
+//}
+//
+//func requestToken() (accessToken, error) {
+//	request := makeTokenRequest()
+//	response := sendRequest(request)
+//	return response.getToken(), nil
+//}
+
+func MakeTokenRequest(resourceType string, actions []string, location string, client Client,
+	redirectURI, redirectNonce string) Request {
+	req := map[string]interface{}{
+		"resources":    makeResources(resourceType, actions, location),
+		"client":       makeClient(client.name, client.uri, client.pub, client.messageSecurity),
+		"interact":     makeInteract(redirectURI, redirectNonce),
+		"capabilities": makeCapabilities(),
+		"subject":      makeSubject(),
+	}
+	request := Request{req}
+	// request.dump()
+	return request
+}
+
+func makeSubject() interface{} {
+	return map[string]interface{}{
+			"sub_ids": []string{"iss-sub", "email"},
+	}
+}
+
+func makeInteract(uri string, nonce string) interface{} {
+	return map[string]interface{}{
+		"redirect": true,
+		"callback": map[string]string{
+			"method": "redirect",
+			"uri":    uri,
+			"nonce":  nonce,
+		},
+	}
+}
+
+func makeClient(name string, uri string, clientKey jwk.Key, messageSecurity int) interface{} {
+	var proof string
+	switch messageSecurity {
+	case DetachedSignature:
+		proof = "jwsd"
+	case AttachedJWS:
+		proof = "jws"
+	default:
+		fmt.Println("Unsupported message security", messageSecurity)
+		os.Exit(1)
+	}
+	key := map[string]interface{} {
+		"proof": proof,
+		"jwk": clientKey,
+	}
+	return map[string]interface{}{
+		"name": name,
+		"uri":  uri,
+		"key":  key,
+	}
+}
+
+func makeResources(resourceType string, actions []string, location string) interface{} {
+	locations := []string{location} // TODO: multiple locations
+	return map[string]interface{}{
+		"type":      resourceType,
+		"actions":   actions,
+		"locations": locations,
+	}
+}
+
+func makeCapabilities() interface{} {
+	return make([]string, 0) // empty array (otherwise will be marshaled as null)
+}
+
+func runClient() {
+	rootLogger, _ = zap.NewProduction()
+	defer rootLogger.Sync() // flushes buffer, if any
+	logger = rootLogger.Sugar()
+
+	err, client := initializeClientState()
+	nonce, err := makeNonce()
+	if err != nil {
+		fmt.Println("Could not create nonce", err)
+		os.Exit(1)
+	}
+	request := MakeTokenRequest("photo-api", []string{"read", "print"}, "http://localhost/photos",
+		client,
+		"http://localhost/client/request-done",
+		nonce)
+
+	secureRequest(client, request)
+	request.dump()
+}
+
+func initializeClientState() (error, Client) {
+	kvstore, err := skv.Open("my_cache.bolt")
+	if err != nil {
+		fmt.Println("Failed to open key-value store")
+		os.Exit(1)
+	}
+	defer kvstore.Close()
+
+	var client Client
+
+	var name string
+	if err := kvstore.Get("name", &name); err == skv.ErrNotFound {
+		client = setupClient()
+		err := saveClient(kvstore, client)
+		if err != nil {
+			fmt.Println("Could not store client in cache:", err)
+			os.Exit(1)
+		}
+	} else if err != nil {
+		fmt.Println("Could not get client value", err)
+		os.Exit(1)
+	} else {
+		client, err = loadClient(kvstore)
+		if err != nil {
+			fmt.Println("Failed to load cached client", err)
+		}
+	}
+	return err, client
+}
+
+func secureRequest(client Client, request Request) {
+	switch client.messageSecurity {
+	case AttachedJWS:
+		_, err := signMessageAttached(request, client.prv)
+		if err != nil {
+			fmt.Println("Could not sign message", err)
+			os.Exit(1)
+		}
+	default:
+		fmt.Println("Unsupported message security setting", client.messageSecurity)
+	}
+}
+
+func saveClient(kvstore *skv.KVStore, client Client) error {
+	kvstore.Put("name", client.name)
+	kvstore.Put("uri", client.uri)
+	kvstore.Put("messageSecurity", client.messageSecurity)
+	jsonPrv, err := json.Marshal(client.prv)
+	if err != nil {
+		return errors.Wrapf(err,"Failed to marshal prv")
+	}
+	kvstore.Put("prv", string(jsonPrv))
+	jsonPub, err := json.Marshal(client.pub)
+	if err != nil {
+		return errors.Wrapf(err,"Failed to marshal pub")
+	}
+	kvstore.Put("pub", string(jsonPub))
+
+	return nil
+}
+
+func loadClient(kvstore *skv.KVStore) (Client, error) {
+	var client Client
+	kvstore.Get("name", &client.name)
+	kvstore.Get("uri", &client.uri)
+	kvstore.Get("messageSecurity", &client.messageSecurity)
+	var jsonPrv, jsonPub string
+	kvstore.Get("prv", &jsonPrv)
+	kvstore.Get("pub", &jsonPub)
+	prv, err := jwk.ParseKey([]byte(jsonPrv))
+	if err != nil {
+		return client, errors.Wrapf(err,"Could not parse prv")
+	}
+	client.prv = prv
+	pub, err := jwk.ParseKey([]byte(jsonPub))
+	if err != nil {
+		return client, errors.Wrapf(err,"Could not parse pub")
+	}
+	client.pub = pub
+	logger.Infof("Loaded client %v", client)
+	return client, nil
+}
+
+func signMessageAttached(request Request, key jwk.Key) (string, error) {
+	asJSON, err := json.Marshal(request.Any)
+	if err != nil {
+		return "", errors. Wrapf(err,"Could not marshal request")
+	}
+	headers := jws.NewHeaders()
+	_ = headers.Set(jws.KeyIDKey, key.KeyID())
+	_ = headers.Set(jws.AlgorithmKey, jwa.RS256)
+	_ = headers.Set("htm", "post")
+	_ = headers.Set("htu", "/tx")
+	_ = headers.Set("ts", time.Now().Unix())
+	signed, err2 := jws.Sign(asJSON, jwa.RS256, key, jws.WithHeaders(headers))
+	if err2 != nil {
+		return "", errors.Wrapf(err, "Could not sign message body")
+	}
+	return string(signed), nil
+}
+
+func makeNonce() (string, error) {
+	nonce := make([]byte, NonceLength)
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return "", errors.Wrapf(err, "Failed to create nonce")
+	}
+	return hex.EncodeToString(nonce), nil
+}
+
+func setupClient() Client {
+	prv, pub, err := generateClientKey()
+	if err != nil {
+		fmt.Println("Cannot set up client", err)
+		os.Exit(1)
+	}
+	c := Client{
+		"My Fist Client",
+		"http://localhost/client/clientID",
+		prv,
+		pub,
+		AttachedJWS,
+	}
+	return c
+}
