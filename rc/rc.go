@@ -14,7 +14,9 @@ import (
 	"github.com/rapidloop/skv"
 	"go.uber.org/zap"
 	"io"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -32,9 +34,10 @@ type Request struct {
 } // the raw JSON structure
 
 type Client struct {
-	name, uri string
-	prv, pub jwk.Key
+	name, uri       string
+	prv, pub        jwk.Key
 	messageSecurity int
+	asURI           string
 }
 
 // Message security
@@ -43,10 +46,10 @@ const (
 	AttachedJWS
 )
 
-func (req Request) dump() {
+func (req Request) dump() string {
 	var buff bytes.Buffer
 	_ = json.Indent(&buff, []byte(req.toJSON()), "", "  ")
-	fmt.Println("req:", buff.String())
+	return buff.String()
 }
 
 func (req Request) toJSON() string {
@@ -66,7 +69,7 @@ func generateClientKey() (prv, pub jwk.Key, err error) {
 	}
 	prv, err = jwk.New(privateKey)
 	if err != nil {
-		return nil, nil, errors.Wrapf(err,"Failed to create private key")
+		return nil, nil, errors.Wrapf(err, "Failed to create private key")
 	}
 	pub, err = jwk.New(privateKey.Public())
 	if err != nil {
@@ -102,7 +105,7 @@ func generateClientKey() (prv, pub jwk.Key, err error) {
 //	return response.getToken(), nil
 //}
 
-func MakeTokenRequest(resourceType string, actions []string, location string, client Client,
+func makeTokenRequest(resourceType string, actions []string, location string, client Client,
 	redirectURI, redirectNonce string) Request {
 	req := map[string]interface{}{
 		"resources":    makeResources(resourceType, actions, location),
@@ -112,13 +115,12 @@ func MakeTokenRequest(resourceType string, actions []string, location string, cl
 		"subject":      makeSubject(),
 	}
 	request := Request{req}
-	// request.dump()
 	return request
 }
 
 func makeSubject() interface{} {
 	return map[string]interface{}{
-			"sub_ids": []string{"iss-sub", "email"},
+		"sub_ids": []string{"iss-sub", "email"},
 	}
 }
 
@@ -144,9 +146,9 @@ func makeClient(name string, uri string, clientKey jwk.Key, messageSecurity int)
 		fmt.Println("Unsupported message security", messageSecurity)
 		os.Exit(1)
 	}
-	key := map[string]interface{} {
+	key := map[string]interface{}{
 		"proof": proof,
-		"jwk": clientKey,
+		"jwk":   clientKey,
 	}
 	return map[string]interface{}{
 		"name": name,
@@ -179,13 +181,24 @@ func runClient() {
 		fmt.Println("Could not create nonce", err)
 		os.Exit(1)
 	}
-	request := MakeTokenRequest("photo-api", []string{"read", "print"}, "http://localhost/photos",
+	request := makeTokenRequest("photo-api", []string{"read", "print"}, "http://localhost/photos",
 		client,
 		"http://localhost/client/request-done",
 		nonce)
 
-	secureRequest(client, request)
-	request.dump()
+	logger.Debug("Created request", request.dump())
+
+	contentType, body, err := secureRequest(client, request)
+	if err != nil {
+		logger.Error("Could not secure request", err)
+		os.Exit(1)
+	}
+
+	err = sendRequest(client.asURI, contentType, body)
+	if err != nil {
+		logger.Error("Failed to send request: ", err)
+		os.Exit(1)
+	}
 }
 
 func initializeClientState() (error, Client) {
@@ -218,31 +231,45 @@ func initializeClientState() (error, Client) {
 	return err, client
 }
 
-func secureRequest(client Client, request Request) {
+func secureRequest(client Client, request Request) (contentType, body string, err error) {
 	switch client.messageSecurity {
 	case AttachedJWS:
-		_, err := signMessageAttached(request, client.prv)
+		body, err := signMessageAttached(request, client.prv)
 		if err != nil {
-			fmt.Println("Could not sign message", err)
-			os.Exit(1)
+			return "", "", errors.Wrapf(err, "Could not sign message")
 		}
+		return "application/json", body, nil
 	default:
 		fmt.Println("Unsupported message security setting", client.messageSecurity)
+		return "", "", errors.New("Unsupported message security setting")
 	}
+}
+
+func sendRequest(asUri, contentType, body string) error {
+	resp, err := http.Post(asUri, contentType, strings.NewReader(body))
+	if err != nil {
+		return errors.Wrapf(err, "Could not send request to %s", asUri)
+	}
+	statusCode := resp.StatusCode
+	if statusCode != 200 {
+		logger.Warn("Expected status code 200, got", resp.StatusCode)
+	}
+	return nil
 }
 
 func saveClient(kvstore *skv.KVStore, client Client) error {
 	kvstore.Put("name", client.name)
 	kvstore.Put("uri", client.uri)
+	kvstore.Put("asUri", client.asURI)
 	kvstore.Put("messageSecurity", client.messageSecurity)
 	jsonPrv, err := json.Marshal(client.prv)
 	if err != nil {
-		return errors.Wrapf(err,"Failed to marshal prv")
+		return errors.Wrapf(err, "Failed to marshal prv")
 	}
 	kvstore.Put("prv", string(jsonPrv))
 	jsonPub, err := json.Marshal(client.pub)
 	if err != nil {
-		return errors.Wrapf(err,"Failed to marshal pub")
+		return errors.Wrapf(err, "Failed to marshal pub")
 	}
 	kvstore.Put("pub", string(jsonPub))
 
@@ -253,18 +280,19 @@ func loadClient(kvstore *skv.KVStore) (Client, error) {
 	var client Client
 	kvstore.Get("name", &client.name)
 	kvstore.Get("uri", &client.uri)
+	kvstore.Get("asUri", &client.asURI)
 	kvstore.Get("messageSecurity", &client.messageSecurity)
 	var jsonPrv, jsonPub string
 	kvstore.Get("prv", &jsonPrv)
 	kvstore.Get("pub", &jsonPub)
 	prv, err := jwk.ParseKey([]byte(jsonPrv))
 	if err != nil {
-		return client, errors.Wrapf(err,"Could not parse prv")
+		return client, errors.Wrapf(err, "Could not parse prv")
 	}
 	client.prv = prv
 	pub, err := jwk.ParseKey([]byte(jsonPub))
 	if err != nil {
-		return client, errors.Wrapf(err,"Could not parse pub")
+		return client, errors.Wrapf(err, "Could not parse pub")
 	}
 	client.pub = pub
 	logger.Infof("Loaded client %v", client)
@@ -274,7 +302,7 @@ func loadClient(kvstore *skv.KVStore) (Client, error) {
 func signMessageAttached(request Request, key jwk.Key) (string, error) {
 	asJSON, err := json.Marshal(request.Any)
 	if err != nil {
-		return "", errors. Wrapf(err,"Could not marshal request")
+		return "", errors.Wrapf(err, "Could not marshal request")
 	}
 	headers := jws.NewHeaders()
 	_ = headers.Set(jws.KeyIDKey, key.KeyID())
@@ -309,6 +337,7 @@ func setupClient() Client {
 		prv,
 		pub,
 		AttachedJWS,
+		"http://localhost:9090",
 	}
 	return c
 }
