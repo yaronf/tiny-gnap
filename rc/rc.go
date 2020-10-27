@@ -1,6 +1,7 @@
 package rc
 
 import (
+	"../common"
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
@@ -39,12 +40,6 @@ type Client struct {
 	messageSecurity int
 	asURI           string
 }
-
-// Message security
-const (
-	DetachedSignature = iota
-	AttachedJWS
-)
 
 func (req Request) dump() string {
 	var buff bytes.Buffer
@@ -138,9 +133,9 @@ func makeInteract(uri string, nonce string) interface{} {
 func makeClient(name string, uri string, clientKey jwk.Key, messageSecurity int) interface{} {
 	var proof string
 	switch messageSecurity {
-	case DetachedSignature:
+	case common.DetachedSignature:
 		proof = "jwsd"
-	case AttachedJWS:
+	case common.AttachedJWS:
 		proof = "jws"
 	default:
 		fmt.Println("Unsupported message security", messageSecurity)
@@ -202,7 +197,8 @@ func runClient() {
 }
 
 func initializeClientState() (error, Client) {
-	kvstore, err := skv.Open("my_cache.bolt")
+	home, _ := os.UserHomeDir()
+	kvstore, err := skv.Open(home + common.CachePath)
 	if err != nil {
 		fmt.Println("Failed to open key-value store")
 		os.Exit(1)
@@ -233,7 +229,7 @@ func initializeClientState() (error, Client) {
 
 func secureRequest(client Client, request Request) (contentType, body string, err error) {
 	switch client.messageSecurity {
-	case AttachedJWS:
+	case common.AttachedJWS:
 		body, err := signMessageAttached(request, client.prv)
 		if err != nil {
 			return "", "", errors.Wrapf(err, "Could not sign message")
@@ -252,7 +248,7 @@ func sendRequest(asUri, contentType, body string) error {
 	}
 	statusCode := resp.StatusCode
 	if statusCode != 200 {
-		logger.Warn("Expected status code 200, got", resp.StatusCode)
+		logger.Warn("Expected status code 200, got ", resp.StatusCode)
 	}
 	return nil
 }
@@ -336,8 +332,8 @@ func setupClient() Client {
 		"http://localhost/client/clientID",
 		prv,
 		pub,
-		AttachedJWS,
-		"http://localhost:9090",
+		common.AttachedJWS,
+		"http://localhost:9090/tx",
 	}
 	return c
 }

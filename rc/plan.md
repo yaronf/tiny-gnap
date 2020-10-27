@@ -5,5 +5,5 @@
 * Standard HTTP framework, no special REST framework
 * [JOSE](https://github.com/square/go-jose) library
 * Use interface{} for polymorphism, sigh
-* Ended up using jwx for JOSE (great library!)
-* And skv as a key-value store (not great, you immediately bump into "gob" issues)
+* Ended up using `jwx` for JOSE (great library!)
+* And skv as a key-value store (not great, you immediately bump into `gob` issues)
