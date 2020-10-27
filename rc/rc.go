@@ -50,8 +50,7 @@ func (req Request) dump() string {
 func (req Request) toJSON() string {
 	s, err := json.Marshal(req.Any)
 	if err != nil {
-		fmt.Println("Could not marshal request: ", err)
-		os.Exit(1)
+		logger.Fatal("Could not marshal request: ", err)
 	}
 	return string(s)
 }
@@ -138,8 +137,7 @@ func makeClient(name string, uri string, clientKey jwk.Key, messageSecurity int)
 	case common.AttachedJWS:
 		proof = "jws"
 	default:
-		fmt.Println("Unsupported message security", messageSecurity)
-		os.Exit(1)
+		logger.Fatal("Unsupported message security", messageSecurity)
 	}
 	key := map[string]interface{}{
 		"proof": proof,
@@ -173,8 +171,7 @@ func runClient() {
 	err, client := initializeClientState()
 	nonce, err := makeNonce()
 	if err != nil {
-		fmt.Println("Could not create nonce", err)
-		os.Exit(1)
+		logger.Fatal("Could not create nonce", err)
 	}
 	request := makeTokenRequest("photo-api", []string{"read", "print"}, "http://localhost/photos",
 		client,
@@ -185,14 +182,12 @@ func runClient() {
 
 	contentType, body, err := secureRequest(client, request)
 	if err != nil {
-		logger.Error("Could not secure request", err)
-		os.Exit(1)
+		logger.Fatal("Could not secure request", err)
 	}
 
 	err = sendRequest(client.asURI, contentType, body)
 	if err != nil {
-		logger.Error("Failed to send request: ", err)
-		os.Exit(1)
+		logger.Fatal("Failed to send request: ", err)
 	}
 }
 
@@ -200,8 +195,7 @@ func initializeClientState() (error, Client) {
 	home, _ := os.UserHomeDir()
 	kvstore, err := skv.Open(home + common.CachePath)
 	if err != nil {
-		fmt.Println("Failed to open key-value store")
-		os.Exit(1)
+		logger.Fatal("Failed to open key-value store")
 	}
 	defer kvstore.Close()
 
@@ -212,12 +206,10 @@ func initializeClientState() (error, Client) {
 		client = setupClient()
 		err := saveClient(kvstore, client)
 		if err != nil {
-			fmt.Println("Could not store client in cache:", err)
-			os.Exit(1)
+			logger.Fatal("Could not store client in cache: ", err)
 		}
 	} else if err != nil {
-		fmt.Println("Could not get client value", err)
-		os.Exit(1)
+		logger.Fatal("Could not get client value: ", err)
 	} else {
 		client, err = loadClient(kvstore)
 		if err != nil {
@@ -324,8 +316,7 @@ func makeNonce() (string, error) {
 func setupClient() Client {
 	prv, pub, err := generateClientKey()
 	if err != nil {
-		fmt.Println("Cannot set up client", err)
-		os.Exit(1)
+		logger.Fatal("Cannot set up client", err)
 	}
 	c := Client{
 		"My Fist Client",
