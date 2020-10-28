@@ -2,8 +2,6 @@ package as
 
 import (
 	"../common"
-	"crypto/rsa"
-	"github.com/lestrrat-go/jwx/jwa"
 	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/lestrrat-go/jwx/jws"
 	"github.com/pkg/errors"
@@ -12,6 +10,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"time"
 )
 
 var rootLogger *zap.Logger
@@ -24,7 +23,7 @@ type ClientInfo struct {
 var clientInfo ClientInfo
 
 func runServer() {
-	rootLogger, _ = zap.NewProduction()
+	rootLogger, _ = zap.NewDevelopment()
 	defer rootLogger.Sync() // flushes buffer, if any
 	logger = rootLogger.Sugar()
 
@@ -60,14 +59,21 @@ func loadClientInfo() {
 }
 
 func handleTx(w http.ResponseWriter, r *http.Request) {
-	logger.Infof("Received %s", r.Header.Get("content-type"))
-	if handleRequest(r) != nil {
+	logger.Debugf("Received %s", r.Header.Get("content-type"))
+	if r.Method != http.MethodPost {
+		logger.Error("Unsupported Tx method: ", r.Method)
 		w.WriteHeader(500)
+		return
+	}
+	if err := handleTxRequest(r); err != nil {
+		logger.Error("handleRequest failed: ", err)
+		w.WriteHeader(500)
+		return
 	}
 	w.WriteHeader(200) // TODO
 }
 
-func handleRequest(r *http.Request) error {
+func handleTxRequest(r *http.Request) error {
 	contentType := r.Header.Get("content-type")
 	if contentType == "application/json" { // attached JWS
 		bodyBytes, err := ioutil.ReadAll(r.Body)
@@ -79,18 +85,57 @@ func handleRequest(r *http.Request) error {
 		if err != nil {
 			return errors.Wrapf(err, "Could not verify request")
 		}
-		logger.Infof("Body verified: ", payload)
+		_ = payload // TODO
 		return nil
 	}
 	return errors.New("Cannot handle content type: " + contentType)
 }
 
 func verifyMessage(body []byte) (payload []byte, err error) {
-	var pubKey rsa.PublicKey
-	err = clientInfo.pubKey.Raw(&pubKey)
+	logger.Debugf("Verify with JWK: %v alg: %v", clientInfo.pubKey, clientInfo.pubKey.Algorithm())
+	err = validateJWSHeaders(body)
 	if err != nil {
-		return nil, errors.Wrapf(err, "Failed to convert JWK to RSA public key")
+		return
 	}
-	payload, err = jws.Verify(body, jwa.RS256, pubKey) // TODO: hardcoded algorithm
+	payload, err = jws.VerifyWithJWK(body, clientInfo.pubKey) // TODO: validate headers
 	return
+}
+
+func validateJWSHeaders(body []byte) error {
+	message, err := jws.ParseString(string(body))
+	if err != nil || message == nil {
+		return errors.Wrapf(err, "Failed to parse JWS")
+	}
+	logger.Debugf("Parsed into message %T -- %v", message, message)
+	if len(message.Signatures()) != 1 {
+		return errors.New("Badly formatted JWS")
+	}
+	headers := message.Signatures()[0].ProtectedHeaders()
+	if headers == nil {
+		return errors.New("Cannot find headers")
+	}
+	htm, found := headers.Get("htm")
+	if !found || htm != "post" {
+		return errors.New("Bad htm header")
+	}
+	htu, found := headers.Get("htu")
+	if !found || htu != "/tx" { // TODO hardcoded
+		return errors.New("Bad htu header")
+	}
+	tsi, found := headers.Get("ts")
+	ts, ok := tsi.(float64)
+	if !found || !ok || !isValidTimestamp(int64(ts)) { // conversion to int64 will round the number :-(
+		logger.Debugf("ts: found %v ok %v tsi %T -- %v", found, ok, tsi, tsi)
+		return errors.New("Bad ts header")
+	}
+
+	return nil
+}
+
+func isValidTimestamp(ts int64) bool {
+	const TimeSkew = 10 // sec
+	now := time.Now().Unix()
+	diff := ts - now
+	logger.Debugf("Timestamp ts %v now %v", ts, now)
+	return diff > -TimeSkew && diff < TimeSkew
 }

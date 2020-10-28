@@ -77,6 +77,10 @@ func generateClientKey() (prv, pub jwk.Key, err error) {
 	if err != nil {
 		return nil, nil, errors.Wrapf(err, "Failed to assign key ID to pub")
 	}
+	err = pub.Set("alg", "RS256") // TODO: hardcoded
+	if err != nil {
+		return nil, nil, errors.Wrapf(err, "Failed to set alg on pub")
+	}
 	return
 }
 
@@ -164,7 +168,7 @@ func makeCapabilities() interface{} {
 }
 
 func runClient() {
-	rootLogger, _ = zap.NewProduction()
+	rootLogger, _ = zap.NewDevelopment()
 	defer rootLogger.Sync() // flushes buffer, if any
 	logger = rootLogger.Sugar()
 
@@ -297,7 +301,7 @@ func signMessageAttached(request Request, key jwk.Key) (string, error) {
 	_ = headers.Set(jws.AlgorithmKey, jwa.RS256)
 	_ = headers.Set("htm", "post")
 	_ = headers.Set("htu", "/tx")
-	_ = headers.Set("ts", time.Now().Unix())
+	_ = headers.Set("ts", time.Now().Unix()) // Note all numbers will be decoded as float64 (a json package artifact)
 	signed, err2 := jws.Sign(asJSON, jwa.RS256, key, jws.WithHeaders(headers))
 	if err2 != nil {
 		return "", errors.Wrapf(err, "Could not sign message body")
