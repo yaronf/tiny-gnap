@@ -2,6 +2,8 @@ package as
 
 import (
 	"../common"
+	"encoding/json"
+	"github.com/lestrrat-go/jwx"
 	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/lestrrat-go/jwx/jws"
 	"github.com/pkg/errors"
@@ -28,6 +30,9 @@ func runServer() {
 	logger = rootLogger.Sugar()
 
 	loadClientInfo()
+
+	// initialize non-standard configuration of jwx - read JSON numbers as strings to avoid conversion from/to floats
+	jwx.DecoderSettings(jwx.WithUseNumber(true))
 
 	http.HandleFunc("/tx", handleTx)
 	err := http.ListenAndServe(":9090", nil)
@@ -92,7 +97,6 @@ func handleTxRequest(r *http.Request) error {
 }
 
 func verifyMessage(body []byte) (payload []byte, err error) {
-	logger.Debugf("Verify with JWK: %v alg: %v", clientInfo.pubKey, clientInfo.pubKey.Algorithm())
 	err = validateJWSHeaders(body)
 	if err != nil {
 		return
@@ -106,7 +110,6 @@ func validateJWSHeaders(body []byte) error {
 	if err != nil || message == nil {
 		return errors.Wrapf(err, "Failed to parse JWS")
 	}
-	logger.Debugf("Parsed into message %T -- %v", message, message)
 	if len(message.Signatures()) != 1 {
 		return errors.New("Badly formatted JWS")
 	}
@@ -122,10 +125,14 @@ func validateJWSHeaders(body []byte) error {
 	if !found || htu != "/tx" { // TODO hardcoded
 		return errors.New("Bad htu header")
 	}
-	tsi, found := headers.Get("ts")
-	ts, ok := tsi.(float64)
-	if !found || !ok || !isValidTimestamp(int64(ts)) { // conversion to int64 will round the number :-(
-		logger.Debugf("ts: found %v ok %v tsi %T -- %v", found, ok, tsi, tsi)
+	tsi, found := headers.Get("ts") // read as json.Number
+	tsn, ok := tsi.(json.Number)
+	if !found || !ok {
+		return errors.New("Expected a json.Number for ts, no luck")
+	}
+	ts, err := tsn.Int64()
+	if err != nil || !isValidTimestamp(int64(ts)) {
+		logger.Debugf("ts: tsi %#v", tsi)
 		return errors.New("Bad ts header")
 	}
 
