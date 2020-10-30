@@ -1,7 +1,7 @@
 package rc
 
 import (
-	"../common"
+	"github.com/yaronf/tiny-gnap/common"
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"

@@ -1,7 +1,7 @@
 package as
 
 import (
-	"../common"
+	"github.com/yaronf/tiny-gnap/common"
 	"encoding/json"
 	"github.com/lestrrat-go/jwx"
 	"github.com/lestrrat-go/jwx/jwk"

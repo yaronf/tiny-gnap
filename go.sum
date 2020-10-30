@@ -16,6 +16,8 @@ github.com/lestrrat-go/iter v0.0.0-20200422075355-fc1769541911 h1:FvnrqecqX4zT0w
 github.com/lestrrat-go/iter v0.0.0-20200422075355-fc1769541911/go.mod h1:zIdgO1mRKhn8l9vrZJZz9TUMMFbQbLeTsbqPDrJ/OJc=
 github.com/lestrrat-go/jwx v1.0.5 h1:8bVUGXXkR3+YQNwuFof3lLxSJMLtrscHJfGI6ZIBRD0=
 github.com/lestrrat-go/jwx v1.0.5/go.mod h1:TPF17WiSFegZo+c20fdpw49QD+/7n4/IsGvEmCSWwT0=
+github.com/lestrrat-go/jwx v1.0.6-0.20201029222056-556b0e99b983 h1:agVa8zOUj33SsEfAvdz8u9g0Ady/QiXzSAJxUUA9tdI=
+github.com/lestrrat-go/jwx v1.0.6-0.20201029222056-556b0e99b983/go.mod h1:TPF17WiSFegZo+c20fdpw49QD+/7n4/IsGvEmCSWwT0=
 github.com/lestrrat-go/pdebug v0.0.0-20200204225717-4d6bd78da58d h1:aEZT3f1GGg5RIlHMAy4/4fe4ciOi3SCwYoaURphcB4k=
 github.com/lestrrat-go/pdebug v0.0.0-20200204225717-4d6bd78da58d/go.mod h1:B06CSso/AWxiPejj+fheUINGeBKeeEZNt8w+EoU7+L8=
 github.com/pkg/errors v0.8.1/go.mod h1:bwawxfHBFNV+L2hUp1rHADufV3IMtnDRdf1r5NINEl0=
