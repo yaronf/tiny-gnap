@@ -1,13 +1,14 @@
 package as
 
 import (
-	"github.com/yaronf/tiny-gnap/common"
 	"encoding/json"
+	"fmt"
 	"github.com/lestrrat-go/jwx"
 	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/lestrrat-go/jwx/jws"
 	"github.com/pkg/errors"
 	"github.com/rapidloop/skv"
+	"github.com/yaronf/tiny-gnap/common"
 	"go.uber.org/zap"
 	"io/ioutil"
 	"net/http"
@@ -16,62 +17,147 @@ import (
 )
 
 var rootLogger *zap.Logger
-var logger *zap.SugaredLogger
+var log *zap.SugaredLogger
 
-type ClientInfo struct {
-	pubKey jwk.Key
-}
+var client common.Client
 
-var clientInfo ClientInfo
+var as common.AuthzServer
 
 func runServer() {
 	rootLogger, _ = zap.NewDevelopment()
 	defer rootLogger.Sync() // flushes buffer, if any
-	logger = rootLogger.Sugar()
+	log = rootLogger.Sugar()
 
-	loadClientInfo()
+	var err error
+	as, err = initializeASState()
+	if err != nil {
+		log.Fatal("Failed to initialize AS state")
+	}
+
+	err = loadClientInfo()
+	if err != nil {
+		log.Fatal("Failed to load client information")
+	}
 
 	// initialize non-standard configuration of jwx - read JSON numbers as strings to avoid conversion from/to floats
 	jwx.DecoderSettings(jwx.WithUseNumber(true))
 
 	http.HandleFunc("/tx", handleTx)
-	err := http.ListenAndServe(":9090", nil)
+	err = http.ListenAndServe(":9090", nil)
 	if err != nil {
-		logger.Error("Could not start listener")
+		log.Error("Could not start listener")
 	}
 }
 
 // We cheat and read the client's public key from a cache shared with the client
-func loadClientInfo() {
+func loadClientInfo() error {
 	home, _ := os.UserHomeDir()
 	kvstore, err := skv.Open(home + common.CachePath)
 	if err != nil {
-		logger.Fatal("Failed to open key-value store: ", err)
+		return errors.Wrapf(err, "Failed to open key-value store: ")
 	}
 	defer kvstore.Close()
 
-	var jsonPub string
-	err = kvstore.Get("pub", &jsonPub)
+	client, err = common.LoadClient(kvstore, "client."+"1"+".", false, log)
 	if err != nil {
-		logger.Fatal("Could not read from cache: ", err)
+		return errors.Wrapf(err, "Failed to load client")
 	}
+	return nil
+}
+
+func initializeASState() (common.AuthzServer, error) {
+	home, _ := os.UserHomeDir()
+	kvstore, err := skv.Open(home + common.CachePath)
+	if err != nil {
+		log.Fatal("Failed to open key-value store")
+	}
+	defer kvstore.Close()
+
+	var as common.AuthzServer
+	const ASID = "1"
+
+	var name string
+	prefix := "as." + ASID + "."
+	if err := kvstore.Get(prefix+"Name", &name); err == skv.ErrNotFound {
+		as = setupAS()
+		err := saveAS(kvstore, prefix, as)
+		if err != nil {
+			log.Fatal("Could not store client in cache: ", err)
+		}
+	} else if err != nil {
+		log.Fatal("Could not get client value: ", err)
+	} else {
+		as, err = loadAS(kvstore, prefix, true)
+		if err != nil {
+			fmt.Println("Failed to load cached client", err)
+		}
+	}
+	return as, err
+}
+
+func saveAS(kvstore *skv.KVStore, prefix string, as common.AuthzServer) error {
+	kvstore.Put(prefix+"Name", as.Name)
+	kvstore.Put(prefix+"URI", as.URI)
+	jsonPrv, err := json.Marshal(as.Prv)
+	if err != nil {
+		return errors.Wrapf(err, "Failed to marshal Prv")
+	}
+	kvstore.Put(prefix+"Prv", string(jsonPrv))
+	jsonPub, err := json.Marshal(as.Pub)
+	if err != nil {
+		return errors.Wrapf(err, "Failed to marshal Pub")
+	}
+	kvstore.Put(prefix+"Pub", string(jsonPub))
+
+	return nil
+}
+
+func loadAS(kvstore *skv.KVStore, prefix string, withPrivate bool) (common.AuthzServer, error) {
+	var as common.AuthzServer
+	kvstore.Get(prefix+"Name", &as.Name)
+	kvstore.Get(prefix+"URI", &as.URI)
+	var jsonPrv, jsonPub string
+	if withPrivate {
+		kvstore.Get(prefix+"Prv", &jsonPrv)
+		prv, err := jwk.ParseKey([]byte(jsonPrv))
+		if err != nil {
+			return as, errors.Wrapf(err, "Could not parse Prv")
+		}
+		as.Prv = prv
+	}
+	kvstore.Get(prefix+"Pub", &jsonPub)
 	pub, err := jwk.ParseKey([]byte(jsonPub))
 	if err != nil {
-		logger.Fatal("Could not parse pub: ", err)
+		return as, errors.Wrapf(err, "Could not parse Pub")
 	}
-	clientInfo.pubKey = pub
-	return
+	as.Pub = pub
+	log.Infof("Loaded AS %v", as)
+	return as, nil
+}
+
+func setupAS() common.AuthzServer {
+	prv, pub, err := common.GenerateKeypair()
+	if err != nil {
+		log.Fatal("Cannot set up client", err)
+	}
+	as := common.AuthzServer{
+		"My AS",
+		"http://localhost/as/asID",
+		prv,
+		pub,
+	}
+	return as
 }
 
 func handleTx(w http.ResponseWriter, r *http.Request) {
-	logger.Debugf("Received %s", r.Header.Get("content-type"))
+	log.Debugf("Received %s", r.Header.Get("content-type"))
 	if r.Method != http.MethodPost {
-		logger.Error("Unsupported Tx method: ", r.Method)
+		log.Error("Unsupported Tx method: ", r.Method)
 		w.WriteHeader(500)
 		return
 	}
 	if err := handleTxRequest(r); err != nil {
-		logger.Error("handleRequest failed: ", err)
+		log.Error("handleRequest failed: ", err)
 		w.WriteHeader(500)
 		return
 	}
@@ -80,20 +166,27 @@ func handleTx(w http.ResponseWriter, r *http.Request) {
 
 func handleTxRequest(r *http.Request) error {
 	contentType := r.Header.Get("content-type")
-	if contentType == "application/json" { // attached JWS
-		bodyBytes, err := ioutil.ReadAll(r.Body)
-		if err != nil {
-			return errors.Wrapf(err, "Could not read body")
-		}
-
-		payload, err := verifyMessage(bodyBytes)
-		if err != nil {
-			return errors.Wrapf(err, "Could not verify request")
-		}
-		_ = payload // TODO
-		return nil
+	if contentType != "application/json" { // attached JWS
+		return errors.New("Cannot handle content type: " + contentType)
 	}
-	return errors.New("Cannot handle content type: " + contentType)
+	bodyBytes, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return errors.Wrapf(err, "Could not read body")
+	}
+
+	payload, err := verifyMessage(bodyBytes)
+	if err != nil {
+		return errors.Wrapf(err, "Could not verify request")
+	}
+	if !checkPolicy(payload) {
+		return errors.New("AS refused to grant AT")
+	}
+	return nil
+}
+
+func checkPolicy(payload []byte) bool {
+	_ = payload
+	return true // TODO
 }
 
 func verifyMessage(body []byte) (payload []byte, err error) {
@@ -101,7 +194,8 @@ func verifyMessage(body []byte) (payload []byte, err error) {
 	if err != nil {
 		return
 	}
-	payload, err = jws.VerifyWithJWK(body, clientInfo.pubKey) // TODO: validate headers
+	log.Infof("client.Pub %#v", client.Pub)
+	payload, err = jws.VerifyWithJWK(body, client.Pub) // TODO: validate headers
 	return
 }
 
@@ -131,8 +225,8 @@ func validateJWSHeaders(body []byte) error {
 		return errors.New("Expected a json.Number for ts, no luck")
 	}
 	ts, err := tsn.Int64()
-	if err != nil || !isValidTimestamp(int64(ts)) {
-		logger.Debugf("ts: tsi %#v", tsi)
+	if err != nil || !isValidTimestamp(ts) {
+		log.Debugf("ts: tsi %#v", tsi)
 		return errors.New("Bad ts header")
 	}
 
@@ -143,6 +237,6 @@ func isValidTimestamp(ts int64) bool {
 	const TimeSkew = 10 // sec
 	now := time.Now().Unix()
 	diff := ts - now
-	logger.Debugf("Timestamp ts %v now %v", ts, now)
+	log.Debugf("Timestamp ts %v now %v", ts, now)
 	return diff > -TimeSkew && diff < TimeSkew
 }
