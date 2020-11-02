@@ -9,6 +9,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rapidloop/skv"
 	"github.com/yaronf/tiny-gnap/common"
+	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"io/ioutil"
 	"net/http"
@@ -58,7 +59,7 @@ func loadClientInfo() error {
 	}
 	defer kvstore.Close()
 
-	client, err = common.LoadClient(kvstore, "client."+"1"+".", false, log)
+	client, err = common.LoadClient(kvstore, "client."+"1"+".", false)
 	if err != nil {
 		return errors.Wrapf(err, "Failed to load client")
 	}
@@ -71,6 +72,7 @@ func initializeASState() (common.AuthzServer, error) {
 	if err != nil {
 		log.Fatal("Failed to open key-value store")
 	}
+	//goland:noinspection GoNilness
 	defer kvstore.Close()
 
 	var as common.AuthzServer
@@ -78,7 +80,8 @@ func initializeASState() (common.AuthzServer, error) {
 
 	var name string
 	prefix := "as." + ASID + "."
-	if err := kvstore.Get(prefix+"Name", &name); err == skv.ErrNotFound {
+	if //goland:noinspection GoNilness
+	err := kvstore.Get(prefix+"Name", &name); err == skv.ErrNotFound {
 		as = setupAS()
 		err := saveAS(kvstore, prefix, as)
 		if err != nil {
@@ -96,42 +99,49 @@ func initializeASState() (common.AuthzServer, error) {
 }
 
 func saveAS(kvstore *skv.KVStore, prefix string, as common.AuthzServer) error {
-	kvstore.Put(prefix+"Name", as.Name)
-	kvstore.Put(prefix+"URI", as.URI)
 	jsonPrv, err := json.Marshal(as.Prv)
 	if err != nil {
 		return errors.Wrapf(err, "Failed to marshal Prv")
 	}
-	kvstore.Put(prefix+"Prv", string(jsonPrv))
 	jsonPub, err := json.Marshal(as.Pub)
 	if err != nil {
 		return errors.Wrapf(err, "Failed to marshal Pub")
 	}
-	kvstore.Put(prefix+"Pub", string(jsonPub))
-
-	return nil
+	multierr.AppendInto(&err, kvstore.Put(prefix+"Prv", string(jsonPrv)))
+	multierr.AppendInto(&err, kvstore.Put(prefix+"Pub", string(jsonPub)))
+	multierr.AppendInto(&err, kvstore.Put(prefix+"Name", as.Name))
+	multierr.AppendInto(&err, kvstore.Put(prefix+"URI", as.URI))
+	return err
 }
 
 func loadAS(kvstore *skv.KVStore, prefix string, withPrivate bool) (common.AuthzServer, error) {
 	var as common.AuthzServer
-	kvstore.Get(prefix+"Name", &as.Name)
-	kvstore.Get(prefix+"URI", &as.URI)
-	var jsonPrv, jsonPub string
+	var err error
+	multierr.AppendInto(&err, kvstore.Get(prefix+"Name", &as.Name))
+	multierr.AppendInto(&err, kvstore.Get(prefix+"URI", &as.URI))
+	var jsonPub string
+	multierr.AppendInto(&err, kvstore.Get(prefix+"Pub", &jsonPub))
+	if err != nil {
+		return as, errors.Wrapf(err, "Could not load AS properties")
+	}
+	var jsonPrv string
 	if withPrivate {
-		kvstore.Get(prefix+"Prv", &jsonPrv)
+		err := kvstore.Get(prefix+"Prv", &jsonPrv)
+		if err != nil {
+			return as, errors.Wrapf(err, "Could not load AS private key")
+		}
 		prv, err := jwk.ParseKey([]byte(jsonPrv))
 		if err != nil {
 			return as, errors.Wrapf(err, "Could not parse Prv")
 		}
 		as.Prv = prv
 	}
-	kvstore.Get(prefix+"Pub", &jsonPub)
 	pub, err := jwk.ParseKey([]byte(jsonPub))
 	if err != nil {
 		return as, errors.Wrapf(err, "Could not parse Pub")
 	}
 	as.Pub = pub
-	log.Infof("Loaded AS %v", as)
+	log.Debugf("Loaded AS %v", as)
 	return as, nil
 }
 
@@ -141,10 +151,10 @@ func setupAS() common.AuthzServer {
 		log.Fatal("Cannot set up client", err)
 	}
 	as := common.AuthzServer{
-		"My AS",
-		"http://localhost/as/asID",
-		prv,
-		pub,
+		Name: "My AS",
+		URI:  "http://localhost/as/asID",
+		Prv:  prv,
+		Pub:  pub,
 	}
 	return as
 }
@@ -156,6 +166,7 @@ func handleTx(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 		return
 	}
+	log.Info("Received access request")
 	if err := handleTxRequest(r); err != nil {
 		log.Error("handleRequest failed: ", err)
 		w.WriteHeader(500)
@@ -194,7 +205,6 @@ func verifyMessage(body []byte) (payload []byte, err error) {
 	if err != nil {
 		return
 	}
-	log.Infof("client.Pub %#v", client.Pub)
 	payload, err = jws.VerifyWithJWK(body, client.Pub) // TODO: validate headers
 	return
 }

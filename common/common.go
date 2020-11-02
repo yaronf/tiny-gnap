@@ -7,7 +7,7 @@ import (
 	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/pkg/errors"
 	"github.com/rapidloop/skv"
-	"go.uber.org/zap"
+	"go.uber.org/multierr"
 )
 
 const CachePath = "/misc/gnap/core/my_cache.bolt"
@@ -60,27 +60,33 @@ func GenerateKeypair() (prv, pub jwk.Key, err error) {
 	return
 }
 
-func LoadClient(kvstore *skv.KVStore, prefix string, withPrivate bool, log *zap.SugaredLogger) (Client, error) {
+func LoadClient(kvstore *skv.KVStore, prefix string, withPrivate bool) (Client, error) {
 	var client Client
-	kvstore.Get(prefix+"Name", &client.Name)
-	kvstore.Get(prefix+"URI", &client.URI)
-	kvstore.Get(prefix+"asUri", &client.ASURI)
-	kvstore.Get(prefix+"MessageSecurity", &client.MessageSecurity)
-	var jsonPrv, jsonPub string
+	var jsonPub string
+	err := kvstore.Get(prefix+"Name", &client.Name)
+	multierr.AppendInto(&err, kvstore.Get(prefix+"URI", &client.URI))
+	multierr.AppendInto(&err, kvstore.Get(prefix+"asUri", &client.ASURI))
+	multierr.AppendInto(&err, kvstore.Get(prefix+"MessageSecurity", &client.MessageSecurity))
+	multierr.AppendInto(&err, kvstore.Get(prefix+"Pub", &jsonPub))
+	if err != nil {
+		return client, errors.Wrapf(err, "Failed to read client properties")
+	}
+	var jsonPrv string
 	if withPrivate {
-		kvstore.Get(prefix+"Prv", &jsonPrv)
+		err := kvstore.Get(prefix+"Prv", &jsonPrv)
+		if err != nil {
+			return client, errors.Wrapf(err, "Failed to read client private key")
+		}
 		prv, err := jwk.ParseKey([]byte(jsonPrv))
 		if err != nil {
 			return client, errors.Wrapf(err, "Could not parse Prv")
 		}
 		client.Prv = prv
 	}
-	kvstore.Get(prefix+"Pub", &jsonPub)
 	pub, err := jwk.ParseKey([]byte(jsonPub))
 	if err != nil {
 		return client, errors.Wrapf(err, "Could not parse Pub")
 	}
 	client.Pub = pub
-	log.Infof("Loaded client %v", client)
 	return client, nil
 }

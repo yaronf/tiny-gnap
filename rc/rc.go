@@ -12,6 +12,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/rapidloop/skv"
 	"github.com/yaronf/tiny-gnap/common"
+	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"io"
 	"net/http"
@@ -164,6 +165,7 @@ func initializeClientState() (common.Client, error) {
 	if err != nil {
 		log.Fatal("Failed to open key-value store")
 	}
+	//goland:noinspection GoNilness
 	defer kvstore.Close()
 
 	var client common.Client
@@ -171,7 +173,8 @@ func initializeClientState() (common.Client, error) {
 
 	var name string
 	prefix := "client." + ClientID + "."
-	if err := kvstore.Get(prefix+"Name", &name); err == skv.ErrNotFound {
+	if //goland:noinspection GoNilness
+	err := kvstore.Get(prefix+"Name", &name); err == skv.ErrNotFound {
 		client = setupClient()
 		err := saveClient(kvstore, prefix, client)
 		if err != nil {
@@ -180,7 +183,7 @@ func initializeClientState() (common.Client, error) {
 	} else if err != nil {
 		log.Fatal("Could not get client value: ", err)
 	} else {
-		client, err = common.LoadClient(kvstore, prefix, true, log)
+		client, err = common.LoadClient(kvstore, prefix, true)
 		if err != nil {
 			fmt.Println("Failed to load cached client", err)
 		}
@@ -215,22 +218,22 @@ func sendRequest(asUri, contentType, body string) error {
 }
 
 func saveClient(kvstore *skv.KVStore, prefix string, client common.Client) error {
-	kvstore.Put(prefix+"Name", client.Name)
-	kvstore.Put(prefix+"URI", client.URI)
-	kvstore.Put(prefix+"asUri", client.ASURI)
-	kvstore.Put(prefix+"MessageSecurity", client.MessageSecurity)
 	jsonPrv, err := json.Marshal(client.Prv)
 	if err != nil {
 		return errors.Wrapf(err, "Failed to marshal Prv")
 	}
-	kvstore.Put(prefix+"Prv", string(jsonPrv))
 	jsonPub, err := json.Marshal(client.Pub)
 	if err != nil {
 		return errors.Wrapf(err, "Failed to marshal Pub")
 	}
-	kvstore.Put(prefix+"Pub", string(jsonPub))
+	multierr.AppendInto(&err, kvstore.Put(prefix+"Prv", string(jsonPrv)))
+	multierr.AppendInto(&err, kvstore.Put(prefix+"Pub", string(jsonPub)))
+	multierr.AppendInto(&err, kvstore.Put(prefix+"Name", client.Name))
+	multierr.AppendInto(&err, kvstore.Put(prefix+"URI", client.URI))
+	multierr.AppendInto(&err, kvstore.Put(prefix+"asUri", client.ASURI))
+	multierr.AppendInto(&err, kvstore.Put(prefix+"MessageSecurity", client.MessageSecurity))
 
-	return nil
+	return err
 }
 
 func signMessageAttached(request Request, key jwk.Key) (string, error) {
@@ -265,12 +268,12 @@ func setupClient() common.Client {
 		log.Fatal("Cannot set up client", err)
 	}
 	c := common.Client{
-		"My First Client",
-		"http://localhost/client/clientID",
-		prv,
-		pub,
-		common.AttachedJWS,
-		"http://localhost:9090/tx",
+		Name:            "My First Client",
+		URI:             "http://localhost/client/clientID",
+		Prv:             prv,
+		Pub:             pub,
+		MessageSecurity: common.AttachedJWS,
+		ASURI:           "http://localhost:9090/tx",
 	}
 	return c
 }
