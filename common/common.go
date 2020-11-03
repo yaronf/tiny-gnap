@@ -1,8 +1,10 @@
 package common
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
 	"fmt"
 	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/pkg/errors"
@@ -89,4 +91,31 @@ func LoadClient(kvstore *skv.KVStore, prefix string, withPrivate bool) (Client, 
 	}
 	client.Pub = pub
 	return client, nil
+}
+
+type Any interface{}
+
+type Request struct {
+	Any
+}
+
+func NewRequest(payload []byte) (Request, error) {
+	var r interface{}
+	err := json.Unmarshal(payload, &r)
+	rq := Request{r}
+	return rq, err
+}
+
+func (req Request) Dump() string {
+	var buff bytes.Buffer
+	_ = json.Indent(&buff, []byte(req.ToJSON()), "", "  ")
+	return buff.String()
+}
+
+func (req Request) ToJSON() string {
+	s, err := json.Marshal(req.Any)
+	if err != nil {
+		return "--error--"
+	}
+	return string(s)
 }

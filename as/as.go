@@ -3,6 +3,7 @@ package as
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/PaesslerAG/jsonpath"
 	"github.com/lestrrat-go/jwx"
 	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/lestrrat-go/jwx/jws"
@@ -189,14 +190,34 @@ func handleTxRequest(r *http.Request) error {
 	if err != nil {
 		return errors.Wrapf(err, "Could not verify request")
 	}
-	if !checkPolicy(payload) {
+	req, err := common.NewRequest(payload)
+	if err != nil {
+		return errors.Wrapf(err, "Could not parse request")
+	}
+	if !checkPolicy(req) {
 		return errors.New("AS refused to grant AT")
 	}
+	accessToken, err := generateATForRequest(req)
+	if err != nil {
+		return errors.Wrapf(err, "Failed to generate AT")
+	}
+	_ = accessToken // TODO
 	return nil
 }
 
-func checkPolicy(payload []byte) bool {
-	_ = payload
+func generateATForRequest(req common.Request) (string, error) {
+	rawAT := make(map[string]interface{})
+	theType, err := jsonpath.Get("$.resources.type", req.Any)
+	if err != nil {
+		log.Error("Could not find resource type")
+	}
+	log.Debugf("theType %#v", theType)
+	rawAT["type"] = theType
+	return "", nil
+}
+
+func checkPolicy(req common.Request) bool {
+	_ = req
 	return true // TODO
 }
 

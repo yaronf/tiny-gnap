@@ -1,7 +1,6 @@
 package rc
 
 import (
-	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -28,26 +27,6 @@ const NonceLength = 12
 
 // type accessToken string
 
-type Any interface{}
-
-type Request struct {
-	Any
-} // the raw JSON structure
-
-func (req Request) dump() string {
-	var buff bytes.Buffer
-	_ = json.Indent(&buff, []byte(req.toJSON()), "", "  ")
-	return buff.String()
-}
-
-func (req Request) toJSON() string {
-	s, err := json.Marshal(req.Any)
-	if err != nil {
-		log.Fatal("Could not marshal request: ", err)
-	}
-	return string(s)
-}
-
 //func accessResource(rs) error {
 //	var err1, err2 error
 //	token, err1 := requestToken()
@@ -68,7 +47,7 @@ func (req Request) toJSON() string {
 //}
 
 func makeTokenRequest(resourceType string, actions []string, location string, client common.Client,
-	redirectURI, redirectNonce string) Request {
+	redirectURI, redirectNonce string) common.Request {
 	req := map[string]interface{}{
 		"resources":    makeResources(resourceType, actions, location),
 		"client":       makeClient(client.Name, client.URI, client.Pub, client.MessageSecurity),
@@ -76,7 +55,7 @@ func makeTokenRequest(resourceType string, actions []string, location string, cl
 		"capabilities": makeCapabilities(),
 		"subject":      makeSubject(),
 	}
-	request := Request{req}
+	request := common.Request{req}
 	return request
 }
 
@@ -146,7 +125,7 @@ func runClient() {
 		"http://localhost/client/request-done",
 		nonce)
 
-	log.Debug("Created request", request.dump())
+	log.Debug("Created request", request.Dump())
 
 	contentType, body, err := secureRequest(client, request)
 	if err != nil {
@@ -191,7 +170,7 @@ func initializeClientState() (common.Client, error) {
 	return client, err
 }
 
-func secureRequest(client common.Client, request Request) (contentType, body string, err error) {
+func secureRequest(client common.Client, request common.Request) (contentType, body string, err error) {
 	switch client.MessageSecurity {
 	case common.AttachedJWS:
 		body, err := signMessageAttached(request, client.Prv)
@@ -236,7 +215,7 @@ func saveClient(kvstore *skv.KVStore, prefix string, client common.Client) error
 	return err
 }
 
-func signMessageAttached(request Request, key jwk.Key) (string, error) {
+func signMessageAttached(request common.Request, key jwk.Key) (string, error) {
 	asJSON, err := json.Marshal(request.Any)
 	if err != nil {
 		return "", errors.Wrapf(err, "Could not marshal request")
