@@ -14,8 +14,10 @@ import (
 	"go.uber.org/multierr"
 	"go.uber.org/zap"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -55,7 +57,7 @@ func makeTokenRequest(resourceType string, actions []string, location string, cl
 		"capabilities": makeCapabilities(),
 		"subject":      makeSubject(),
 	}
-	request := common.Request{req}
+	request := common.Request{Any: req}
 	return request
 }
 
@@ -191,8 +193,14 @@ func sendRequest(asUri, contentType, body string) error {
 	}
 	statusCode := resp.StatusCode
 	if statusCode != 200 {
-		log.Warn("Expected status code 200, got ", resp.StatusCode)
+		return errors.New("Expected status code 200, got " + strconv.Itoa(resp.StatusCode))
 	}
+	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return errors.Wrapf(err, "Could not read response body")
+	}
+	bodyString := string(bodyBytes)
+	_ = bodyString // TODO: use access token
 	return nil
 }
 

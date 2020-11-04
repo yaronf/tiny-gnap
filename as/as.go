@@ -3,10 +3,11 @@ package as
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/PaesslerAG/jsonpath"
 	"github.com/lestrrat-go/jwx"
+	"github.com/lestrrat-go/jwx/jwa"
 	"github.com/lestrrat-go/jwx/jwk"
 	"github.com/lestrrat-go/jwx/jws"
+	"github.com/lestrrat-go/jwx/jwt"
 	"github.com/pkg/errors"
 	"github.com/rapidloop/skv"
 	"github.com/yaronf/tiny-gnap/common"
@@ -168,15 +169,14 @@ func handleTx(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Info("Received access request")
-	if err := handleTxRequest(r); err != nil {
+	if err := handleTxRequest(w, r); err != nil {
 		log.Error("handleRequest failed: ", err)
 		w.WriteHeader(500)
 		return
 	}
-	w.WriteHeader(200) // TODO
 }
 
-func handleTxRequest(r *http.Request) error {
+func handleTxRequest(w http.ResponseWriter, r *http.Request) error {
 	contentType := r.Header.Get("content-type")
 	if contentType != "application/json" { // attached JWS
 		return errors.New("Cannot handle content type: " + contentType)
@@ -201,19 +201,53 @@ func handleTxRequest(r *http.Request) error {
 	if err != nil {
 		return errors.Wrapf(err, "Failed to generate AT")
 	}
-	_ = accessToken // TODO
+	err = sendATResponse(w, accessToken)
+	if err != nil {
+		return errors.Wrapf(err, "Failed to send AT response")
+	}
+	return nil
+}
+
+func sendATResponse(w http.ResponseWriter, token string) error {
+	response := map[string]interface{}{
+		"access_token": map[string]interface{}{
+			"value": token,
+			"key":   false,
+		},
+	}
+	asJson, err := json.Marshal(response)
+	if err != nil {
+		return errors.Wrapf(err, "Could not marshal response")
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, err = w.Write(asJson)
+	if err != nil {
+		return errors.Wrapf(err, "Could not write response")
+	}
 	return nil
 }
 
 func generateATForRequest(req common.Request) (string, error) {
-	rawAT := make(map[string]interface{})
-	theType, err := jsonpath.Get("$.resources.type", req.Any)
-	if err != nil {
-		log.Error("Could not find resource type")
+	const ATDuration = 3600
+	token := jwt.New()
+	reqMap, ok := req.Any.(map[string]interface{})
+	if !ok {
+		return "", errors.New("Bad request - not a map?")
 	}
-	log.Debugf("theType %#v", theType)
-	rawAT["type"] = theType
-	return "", nil
+	var err error
+	multierr.AppendInto(&err, token.Set("resources", reqMap["resources"]))
+	multierr.AppendInto(&err, token.Set("client", reqMap["client"]))
+	multierr.AppendInto(&err, token.Set(jwt.IssuedAtKey, time.Now().Unix()))
+	multierr.AppendInto(&err, token.Set(jwt.ExpirationKey, time.Now().Unix()+ATDuration))
+	multierr.AppendInto(&err, token.Set(jwt.IssuerKey, as.Name))
+	if err != nil {
+		return "", errors.Wrapf(err, "Could not populate token")
+	}
+	payload, err := jwt.Sign(token, jwa.RS256, as.Prv)
+	if err != nil {
+		return "", errors.Wrapf(err, "Could not sign token")
+	}
+	return string(payload), nil
 }
 
 func checkPolicy(req common.Request) bool {
