@@ -5,7 +5,6 @@ go 1.14
 replace github.com/yaronf/tiny-gnap/common => /Users/ysheffer/misc/gnap/core/common
 
 require (
-	github.com/PaesslerAG/jsonpath v0.1.1
 	github.com/boltdb/bolt v1.3.1 // indirect
 	github.com/lestrrat-go/jwx v1.0.6-0.20201029222056-556b0e99b983
 	github.com/pkg/errors v0.9.1
