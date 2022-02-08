@@ -54,8 +54,7 @@ func runServer() {
 
 // We cheat and read the client's public key from a cache shared with the client
 func loadClientInfo() error {
-	home, _ := os.UserHomeDir()
-	kvstore, err := skv.Open(home + common.CachePath)
+	kvstore, err := skv.Open(common.CachePath)
 	if err != nil {
 		return errors.Wrapf(err, "Failed to open key-value store: ")
 	}
