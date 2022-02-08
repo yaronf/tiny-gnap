@@ -14,5 +14,6 @@ jobs:
         run: |
           mkdir -p $HOME/misc/gnap/core/
           go test ./as &
+          sleep 3
           go test ./rc
           kill %1

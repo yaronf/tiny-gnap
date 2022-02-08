@@ -1,6 +1,6 @@
 module github.com/yaronf/tiny-gnap
 
-go 1.14
+go 1.17
 
 require (
 	github.com/boltdb/bolt v1.3.1 // indirect
