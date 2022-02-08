@@ -15,7 +15,6 @@ import (
 	"go.uber.org/zap"
 	"io/ioutil"
 	"net/http"
-	"os"
 	"time"
 )
 
@@ -68,8 +67,7 @@ func loadClientInfo() error {
 }
 
 func initializeASState() (common.AuthzServer, error) {
-	home, _ := os.UserHomeDir()
-	kvstore, err := skv.Open(home + common.CachePath)
+	kvstore, err := skv.Open(common.CachePath)
 	if err != nil {
 		log.Fatal("Failed to open key-value store")
 	}
