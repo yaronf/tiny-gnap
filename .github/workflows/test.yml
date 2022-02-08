@@ -12,6 +12,7 @@ jobs:
         uses: actions/checkout@v2
       - name: Test
         run: |
+          mkdir -p $HOME/misc/gnap/core/
           go test ./as &
           go test ./rc
           kill %1
