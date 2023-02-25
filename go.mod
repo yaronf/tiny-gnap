@@ -14,5 +14,5 @@ require (
 	github.com/boltdb/bolt v1.3.1 // indirect
 	github.com/lestrrat-go/iter v0.0.0-20200422075355-fc1769541911 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
-	golang.org/x/sys v0.0.0-20210510120138-977fb7262007 // indirect
+	golang.org/x/sys v0.1.0 // indirect
 )
